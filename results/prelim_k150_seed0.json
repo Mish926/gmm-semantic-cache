@@ -1,0 +1,22 @@
+{
+  "k": 150,
+  "seed": 0,
+  "em_iterations": 60,
+  "final_avg_loglik": -37.060147363339986,
+  "bic": 1205548.908525542,
+  "mean_cluster_purity": 0.5752223097405756,
+  "oos_rejected_by_density_gate": 0.167,
+  "inscope_rejected_by_density_gate": 0.07888888888888888,
+  "hit_rate_at_precision": {
+    "cosine NN threshold": {
+      "0.9": 0.38345454545454544,
+      "0.95": 0.198,
+      "0.98": 0.0001818181818181818
+    },
+    "GMM posterior + density gate": {
+      "0.9": 0.12545454545454546,
+      "0.95": 0.08781818181818182,
+      "0.98": 0.060181818181818184
+    }
+  }
+}
