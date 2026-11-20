@@ -1,0 +1,33 @@
+{
+  "data": "lmarena_gte_merged",
+  "k": 1500,
+  "pca_dim": 64,
+  "seed": 0,
+  "merged_identical_classes": 202,
+  "n_cache": 31898,
+  "n_query": 31898,
+  "answerable_fraction": 0.9964261082199511,
+  "em_iterations": 51,
+  "final_avg_loglik": -40.10387569680132,
+  "bic": 4565109.260990349,
+  "mean_cluster_purity": 0.7287005167222087,
+  "unanswerable_rejected_by_density_gate": 0.7456140350877193,
+  "answerable_rejected_by_density_gate": 0.11153410521016864,
+  "hit_rate_at_precision": {
+    "cosine NN threshold": {
+      "0.9": 1.0,
+      "0.95": 1.0,
+      "0.98": 1.0
+    },
+    "10-NN vote": {
+      "0.9": 1.0,
+      "0.95": 1.0,
+      "0.98": 0.9097749075177127
+    },
+    "GMM posterior + density gate": {
+      "0.9": 0.29575521976299457,
+      "0.95": 0.2556900119129726,
+      "0.98": 0.233839112170042
+    }
+  }
+}

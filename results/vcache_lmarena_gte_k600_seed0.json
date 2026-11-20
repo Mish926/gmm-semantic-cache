@@ -1,0 +1,33 @@
+{
+  "data": "lmarena_gte",
+  "k": 600,
+  "pca_dim": 64,
+  "seed": 0,
+  "merged_identical_classes": 0,
+  "n_cache": 31898,
+  "n_query": 31898,
+  "answerable_fraction": 0.996018559157314,
+  "em_iterations": 60,
+  "final_avg_loglik": -65.00601377531082,
+  "bic": 4949774.3954454595,
+  "mean_cluster_purity": 0.40570412382472265,
+  "unanswerable_rejected_by_density_gate": 0.4094488188976378,
+  "answerable_rejected_by_density_gate": 0.07711434956406786,
+  "hit_rate_at_precision": {
+    "cosine NN threshold": {
+      "0.9": 1.0,
+      "0.95": 3.134992789516584e-05,
+      "0.98": 3.134992789516584e-05
+    },
+    "10-NN vote": {
+      "0.9": 1.0,
+      "0.95": 0.8721863439714088,
+      "0.98": 0.7719292745626685
+    },
+    "GMM posterior + density gate": {
+      "0.9": 0.025079942316132673,
+      "0.95": 0.022697347796100067,
+      "0.98": 0.020095303780801304
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "data": "lmarena_gte",
+  "k": 3000,
+  "pca_dim": 64,
+  "seed": 0,
+  "n_cache": 31898,
+  "n_query": 31898,
+  "answerable_fraction": 0.996018559157314,
+  "em_iterations": 60,
+  "final_avg_loglik": -11.307455933753179,
+  "bic": 4734665.643122732,
+  "mean_cluster_purity": 0.8921635920522758,
+  "unanswerable_rejected_by_density_gate": 0.9212598425196851,
+  "answerable_rejected_by_density_gate": 0.20040288313241636,
+  "hit_rate_at_precision": {
+    "cosine NN threshold": {
+      "0.9": 1.0,
+      "0.95": 3.134992789516584e-05,
+      "0.98": 3.134992789516584e-05
+    },
+    "GMM posterior + density gate": {
+      "0.9": 0.6494451062762555,
+      "0.95": 0.5715091855288733,
+      "0.98": 0.5291240830146091
+    }
+  }
+}
