@@ -1,16 +1,16 @@
-# Probabilistic Semantic Caching with Gaussian Mixture Models
+# Probabilistic Semantic Caching with Mixture Models
 
-> When can an LLM safely reuse a cached answer? We treat that decision as posterior inference in a generative model rather than a hand-tuned similarity cutoff.
+> When can an LLM safely reuse a cached answer? We treat that decision as posterior inference in a generative model of prompts and answers, and test it honestly against strong baselines on real LLM traffic.
 
-LLM applications receive many near-duplicate queries ("What's Canada's capital?" / "Which city is the capital of Canada?"). A **semantic cache** embeds each incoming query and returns a stored answer when it judges the query equivalent to one it has seen, which saves an expensive model call. Production caches such as GPTCache make that judgement with a single cosine-similarity threshold, which gives no control over how often a wrong answer is served.
+LLM applications receive many near-duplicate prompts ("What's Canada's capital?" / "Which city is the capital of Canada?"). A **semantic cache** embeds each incoming prompt and returns a stored answer when it judges the prompt equivalent to one it has seen, which saves an expensive model call. Production caches such as GPTCache make that judgement with a single cosine-similarity threshold, which gives no control over how often a wrong answer is served.
 
-This project replaces the threshold with a **Gaussian mixture model fit by EM** (our own NumPy implementation). Each mixture component is a cluster of similar queries with a learned distribution over the answers those queries received. A new query is served from cache only when (1) the model is confident about which answer it should get and (2) it falls in a region of embedding space the model has actually seen. Everything else is a cache miss.
+This project models the cache decision probabilistically. A **mixture model fit by EM** (our own NumPy implementation) groups cached prompts into clusters, each with a learned distribution over the answers its prompts received. A new prompt is served from cache only when the model is confident about the answer *and* the prompt falls in a region of embedding space the model has seen.
 
-On CLINC150, at a 98% precision target the GMM cache serves **14.8%** of queries; the cosine-threshold cache serves **0.02%**.
+**Where it stands (preliminary, Nov 2026):** on 63,796 real LM-Arena prompts from the [vCache](https://arxiv.org/abs/2502.03771) benchmark, with a cache filled in advance, a simple **10-nearest-neighbour vote beats our first Gaussian-mixture cache** (77.2% vs. 52.9% of queries served at 98% precision). We also found label noise in the benchmark and showed that the pre-filled setting is too easy to separate decision rules. The project now targets the realistic setting: a cache that starts empty and learns online, where pooling evidence across a cluster should matter most.
 
-![Preliminary results, K = 600](figures/prelim_k600_seed0.png)
+![LM-Arena, merged labels, K = 3000](figures/vcache_lmarena_gte_merged_k3000_seed0.png)
 
-*(a) EM log-likelihood over iterations. (b) Precision of served answers against cache hit rate as the decision threshold varies. (c) GMM log-density of in-scope vs. out-of-scope queries; the dashed line is the density gate.*
+*(a) EM log-likelihood over iterations. (b) Precision of served answers against the fraction of queries served, for the cosine threshold, the 10-NN vote and the GMM; both nearest-neighbour rules dominate the GMM when the cache is pre-filled. (c) GMM log-density of queries whose class is or is not in the cache; the dashed line is the density gate.*
 
 This is the course project for **CS275P (Probabilistic Machine Learning)**. The full proposal is in [`docs/`](docs/).
 
@@ -34,23 +34,23 @@ This is the course project for **CS275P (Probabilistic Machine Learning)**. The 
 ## How it works
 
 ```
-                    incoming query
+                    incoming prompt
                           │
                           ▼
               ┌───────────────────────┐
-              │   Sentence embedding  │  SIF-weighted GloVe → L2-normalise → PCA (32-d, whitened)
+              │   Sentence embedding  │  precomputed gte (1,024-d) → L2-normalise → PCA (64-d, whitened)
               └───────────┬───────────┘
                           │  x
                           ▼
               ┌───────────────────────┐
-              │  GMM posterior        │  p(k | x) for every cluster k   (EM-fitted, diagonal cov.)
+              │  Mixture posterior    │  p(k | x) for every cluster k   (EM-fitted, diagonal cov.)
               └───────────┬───────────┘
                           │
             ┌─────────────┴──────────────┐
             ▼                            ▼
   ┌───────────────────┐        ┌───────────────────┐
   │ Answer confidence │        │  Density gate     │
-  │ max_a Σ_k p(k|x)  │        │  log p(x) ≥ δ ?   │  rejects queries unlike
+  │ max_a Σ_k p(k|x)  │        │  log p(x) ≥ δ ?   │  rejects prompts unlike
   │        · θ_k,a    │        │                   │  anything in the cache
   └─────────┬─────────┘        └─────────┬─────────┘
             └─────────────┬──────────────┘
@@ -62,56 +62,67 @@ This is the course project for **CS275P (Probabilistic Machine Learning)**. The 
      serve cached answer      call the LLM (cache miss)
 ```
 
-**The model.** Each cached query has an embedding `x` and an answer `a`. The joint generative model is
+**The model.** Each cached prompt has an embedding `x` and an answer `a`. The joint generative model is
 
 ```
 z ~ Categorical(π)          cluster
-x | z=k ~ N(μ_k, Σ_k)       query embedding
-a | z=k ~ Categorical(θ_k)  answer the query received
+x | z=k ~ p(x | φ_k)        prompt embedding (diagonal Gaussian now; von Mises–Fisher next)
+a | z=k ~ Categorical(θ_k)  answer the prompt received
 ```
 
-EM fits `π, μ, Σ` on the embeddings. `θ_k` is estimated from the soft cluster responsibilities of the cached queries. At query time the predictive answer distribution is `p(a | x) = Σ_k p(k | x) θ_k,a`.
+EM fits the mixture on the embeddings. `θ_k` is estimated from the soft cluster responsibilities of the cached prompts. At query time the predictive answer distribution is `p(a | x) = Σ_k p(k | x) θ_k,a`.
 
-**Why two conditions.** A GMM posterior is close to 1 for *some* cluster even when a query is far from every cluster. On its own it would confidently serve wrong answers to novel queries. The density gate `log p(x) ≥ δ` is what lets the cache say "I haven't seen anything like this."
+**Why two conditions.** A mixture posterior is close to 1 for *some* cluster even when a prompt is far from every cluster. The density gate `log p(x) ≥ δ` is what lets the cache say "I haven't seen anything like this."
 
 ---
 
 ## Measured results
 
-**Setup.** CLINC150: the cache holds 15,000 training queries over 150 intents; the test stream is 4,500 in-scope plus 1,000 out-of-scope queries. Each intent stands in for one cacheable answer, so correctness is exact, and every hit on an out-of-scope query counts as an error. Both policies are swept over 400 thresholds; the table reports the best hit rate achievable at each precision target.
+### Main benchmark: vCache SemBenchmarkLmArena
 
-| K | Cluster purity | BIC (×10⁶) | Hit @ 90% | Hit @ 95% | Hit @ 98% | OOS caught | In-scope rejected |
-|---|---|---|---|---|---|---|---|
-| 150 | 0.58 | **1.206** | 12.5% | 8.8% | 6.0% | 16.7% | 7.9% |
-| 300 | 0.65 | 1.212 | 22.6% | 15.0% | 10.3% | 26.1% | 11.4% |
-| 600 | 0.68 | 1.296 | 30.8% | **21.8%** | **14.8%** | 45.6% | 18.2% |
-| Cosine NN (GPTCache-style) | – | – | **38.3%** | 19.8% | 0.02% | – | – |
+63,796 prompts derived from real LM-Arena user queries, in 3,421 classes of paraphrases; a cached answer is correct if it has the query's class. Prompts are split at random: 31,898 fill the cache, 31,898 form the query stream (99.6% have their class in the cache). Each policy is swept over 400 thresholds; the table reports the largest fraction of queries served while precision stays at or above the target. Single seed.
 
-*"Hit @ p" = fraction of queries served from cache while keeping precision ≥ p. Single seed; multi-seed runs with confidence intervals are on the roadmap.*
+| Labels | Cache policy | Served @ 90% | Served @ 95% | Served @ 98% |
+|---|---|---|---|---|
+| Original | Cosine threshold (GPTCache-style) | 100% | 0.003% | 0.003% |
+| Original | 10-NN vote | 100% | **87.2%** | **77.2%** |
+| Original | GMM, K = 600 | 2.5% | 2.3% | 2.0% |
+| Original | GMM, K = 1500 | 23.1% | 20.3% | 18.8% |
+| Original | GMM, K = 3000 | 64.9% | 57.2% | 52.9% |
+| Merged | Cosine threshold | **100%** | **100%** | **100%** |
+| Merged | 10-NN vote | 100% | 100% | 91.0% |
+| Merged | GMM, K = 1500 | 29.6% | 25.6% | 23.4% |
+| Merged | GMM, K = 3000 | 73.7% | 64.7% | 59.7% |
+
+*"Merged" labels merge classes that contain an identical prompt text (202 classes removed); see finding 1.*
+
+### Development set: CLINC150
+
+150 intents standing in for answers, 1,000 out-of-scope queries, SIF-weighted GloVe embeddings. At 98% precision the GMM (K = 600) serves 14.8% of queries against 0.02% for the cosine threshold. We no longer treat this as evidence for the GMM: we did not run the 10-NN vote here, and LM-Arena showed that the vote is the baseline to beat.
 
 ---
 
 ## What the preliminary results told us
 
-### 1. The probabilistic cache wins exactly where it matters: at strict precision
+### 1. The benchmark has label noise, and it changes conclusions
 
-At 98% precision the cosine cache can serve almost nothing (one query in 5,500). The GMM cache serves 14.8%. At 90% precision the cosine cache wins. A cache that is wrong one time in ten is rarely acceptable in production, so the high-precision regime is the one worth winning, but the loss at 90% is real and we report it.
+350 prompt texts appear in more than one class (2.1% of rows). When a query's nearest cached prompt is word-for-word identical, the benchmark counts the reused answer as correct only 91% of the time. Under the original labels the GMM appeared to crush the cosine baseline at 98% precision; under merged labels, the plain cosine cache serves *every* query at 98% precision. We report both from now on.
 
-### 2. Likelihood picks the wrong K for caching
+### 2. Similarity alone does not predict correctness
 
-BIC prefers K = 150. Cache hit rate keeps improving up to K = 600. A model that explains the embeddings best is not the model that groups queries by *answer*. Picking K by likelihood alone is the wrong criterion here, which motivates the answer-aware EM on the roadmap.
+Under the original labels, the cosine baseline's precision stays between 0.91 and 0.96 for every similarity from 0.80 to 1.00. Part of that is label noise; part is real: many classes are near-identical variants of the same puzzle ("how many sisters does Sally have?") whose correct answers differ. Whether a hit is safe depends on *where* the prompt falls, not just how similar it is.
 
-### 3. Unsupervised clusters do not line up with answers
+### 3. Agreement among nearby cached answers is the signal, and the 10-NN vote uses it best so far
 
-Average cluster purity is 0.58–0.68: a typical cluster mixes several intents. Embedding geometry alone is not answer equivalence. This is the central modelling problem the final project addresses.
+The GMM exploits the same signal (cluster purity rises from 0.41 at K = 600 to 0.89 at K = 3000), but it works in 64 PCA dimensions that keep only 47% of the variance, while the baselines use all 1,024. Part of its loss is that handicap.
 
-### 4. The density gate works, but the two distributions overlap heavily
+### 4. A pre-filled cache is too easy
 
-At K = 600 the gate catches 46% of out-of-scope queries but also turns away 18% of legitimate ones (panel c). That is a weak separator, and a reason to test a von Mises–Fisher mixture, which models unit-length embeddings properly.
+With about 18.6 prompts per class and half of them cached, nearly every query has a close paraphrase waiting. This setting cannot separate good decision rules. Real caches start empty, which is the setting vCache studies and where we go next.
 
-### 5. A strict cosine threshold is not a safe threshold
+### 5. Larger K overfits
 
-At its very strictest settings the cosine cache's precision *drops* to about 92% (panel b): some near-identical queries carry different intents. Raising the similarity cutoff does not buy safety, which is the core argument for an explicit model of answer consistency.
+BIC is best at K = 1500 among the values tried (4.57 × 10⁶ vs. 4.95 × 10⁶ at K = 600 and 4.73 × 10⁶ at K = 3000). At K = 3000 the density gate wrongly rejects 20% of answerable queries.
 
 ---
 
@@ -120,39 +131,43 @@ At its very strictest settings the cosine cache's precision *drops* to about 92%
 Requires Python 3.9+. Tested on macOS with Python 3.11.
 
 ```bash
-git clone https://github.com/<owner>/gmm-semantic-cache.git
+git clone https://github.com/Mish926/gmm-semantic-cache.git
 cd gmm-semantic-cache
 
 python3 -m venv .venv
 source .venv/bin/activate          # if conda is active, run `conda deactivate` first
 python -m pip install -r requirements.txt
 python -m pip install -e .
-
-./scripts/download_data.sh         # CLINC150 (2.4 MB) + GloVe 100-d (128 MB) into data/raw/
 ```
 
-`data/` is git-ignored; the download script recreates it.
+`data/` is git-ignored; the scripts below recreate it.
 
 ---
 
 ## Running the experiments
 
 ```bash
-python -m pytest -q                          # EM sanity checks (3 tests)
-
-python scripts/run_prelim.py --k 600         # main preliminary run
-python scripts/run_prelim.py --k 150         # K sweep
-python scripts/run_prelim.py --k 300
+python -m pytest -q                                   # EM sanity checks (3 tests)
 ```
 
-Each run takes about a minute on a laptop CPU and writes:
+**LM-Arena (main benchmark).** The vCache parquet files are 2–6 GB each, with embeddings stored as text. The prepare script reads only the columns it needs over HTTP range requests (about 1–1.5 GB, once) and saves a compact `.npz`:
 
-- `results/prelim_k{K}_seed{S}.json`: all metrics
-- `figures/prelim_k{K}_seed{S}.png`: the three-panel figure
+```bash
+python scripts/inspect_vcache.py                      # schema of all vCache benchmarks, no download
+python scripts/prepare_vcache.py                      # -> data/processed/lmarena_gte.npz
+python scripts/diagnose_lmarena.py                    # label noise + precision by similarity
+python scripts/run_vcache_prelim.py --k 1500          # original labels
+python scripts/run_vcache_prelim.py --k 3000 --merge-identical   # merged labels
+```
 
-Options: `--k`, `--seed`, `--pca-dim` (default 32), `--max-iter` (default 60), `--density-quantile` (default 0.05).
+**CLINC150 (development set).**
 
-The tests check that EM never decreases the log-likelihood, that posteriors sum to one, and that the model recovers three known clusters on synthetic data.
+```bash
+./scripts/download_data.sh                            # CLINC150 + GloVe into data/raw/
+python scripts/run_prelim.py --k 600
+```
+
+Each run writes `results/*.json` (all metrics) and `figures/*.png` (the three-panel figure). Main options: `--k`, `--seed`, `--pca-dim`, `--max-iter`, `--density-quantile`, `--knn`, `--merge-identical`.
 
 ---
 
@@ -161,20 +176,24 @@ The tests check that EM never decreases the log-likelihood, that posteriors sum 
 ```
 gmm-semantic-cache/
 ├── src/semcache/
-│   ├── data.py        # CLINC150 loading; intents as answers, out-of-scope = -1
-│   ├── embed.py       # SIF-weighted GloVe sentence embeddings
-│   ├── gmm.py         # diagonal-covariance GMM, EM implemented from scratch
-│   ├── cache.py       # GMM posterior cache + cosine nearest-neighbour baseline
-│   ├── metrics.py     # hit rate vs. precision curves
-│   └── plots.py       # three-panel results figure
+│   ├── gmm.py          # diagonal-covariance GMM, EM implemented from scratch
+│   ├── cache.py        # GMM posterior cache, cosine threshold, k-NN vote baselines
+│   ├── vcache_data.py  # vCache loading, cache/stream split, identical-text class merging
+│   ├── data.py         # CLINC150 loading
+│   ├── embed.py        # SIF-weighted GloVe embeddings (CLINC150)
+│   ├── metrics.py      # served-fraction vs. precision curves
+│   └── plots.py        # three-panel results figure
 ├── scripts/
+│   ├── inspect_vcache.py      # read benchmark schemas without downloading
+│   ├── prepare_vcache.py      # download needed columns, parse embeddings
+│   ├── diagnose_lmarena.py    # label-noise and similarity diagnostics
+│   ├── run_vcache_prelim.py   # LM-Arena experiment
 │   ├── download_data.sh
-│   └── run_prelim.py  # end-to-end experiment
-├── tests/test_gmm.py  # EM correctness checks
-├── docs/              # project proposal (PDF + Word)
-├── results/           # committed JSON from every run
-├── figures/           # committed figures
-├── notebooks/         # exploration
+│   └── run_prelim.py          # CLINC150 experiment
+├── tests/test_gmm.py   # EM correctness checks
+├── docs/               # project proposal (PDF + Word)
+├── results/            # committed JSON from every run
+├── figures/            # committed figures
 ├── pyproject.toml
 └── requirements.txt
 ```
@@ -183,35 +202,34 @@ gmm-semantic-cache/
 
 ## Design notes
 
-**Why implement EM ourselves.** The course asks for our own learning algorithms, and owning the code lets us change the model (answer-aware E-step, online updates, vMF components) without fighting a library's API. scikit-learn's `GaussianMixture` is used only as a correctness reference. All E-step computations run in log space with log-sum-exp.
+**Why implement EM ourselves.** The course asks for our own learning algorithms, and owning the code lets us change the model (answer-aware E-step, online updates, von Mises–Fisher components) without fighting a library's API. All E-step computations run in log space with log-sum-exp.
 
-**Why EM and not k-means.** k-means gives hard assignments and no uncertainty. The cache decision needs `p(k | x)`, and the density gate needs `p(x)`; both come for free from a fitted mixture.
+**Why a k-NN vote baseline.** Once the GMM looked strong, the obvious question was whether the gain came from the mixture model or simply from looking at the answers of nearby cached prompts. The vote answers that directly, and it currently wins. Every new model has to beat it.
 
-**Why diagonal covariance.** With 600 components in 32 dimensions a full covariance would need about 317,000 covariance parameters for 15,000 points. Diagonal covariance needs 19,200. A small variance floor (`reg_covar = 1e-3`) prevents components collapsing onto single points.
+**Why report two label versions.** Merging classes that share an identical prompt removes errors no cache could avoid, but it is lenient: it can link families of related puzzles into one class (the largest merged class has 210 prompts). The truth lies between the strict and merged numbers, so we show both.
 
-**Why thresholds come from score quantiles.** An earlier version swept a fixed grid of cosine thresholds that stopped at 0.99. That hid the baseline's behaviour at its strictest settings and made the baseline look worse than it is. Quantile-based thresholds cover each policy's full range fairly.
+**Why thresholds come from score quantiles.** A fixed grid of thresholds can miss a policy's behaviour at its extremes. Quantile-based thresholds cover each policy's full range fairly.
 
-**Why intents stand in for answers.** CLINC150 gives exact ground truth for "these two queries deserve the same answer" plus a labelled out-of-scope set. That makes it a clean first test bed. It is also the main limitation (below).
+**Why the proposal changed.** Our first results (on CLINC150, and on LM-Arena before the label-noise check) suggested the GMM beat the cosine baseline at strict precision. Stronger baselines and a label audit showed that conclusion did not hold. We kept the honest result and redesigned the project around the setting where the question is still open.
 
 ---
 
 ## Limitations
 
-- **Intents are a proxy for LLM answers.** Two queries with the same intent may still deserve different free-text responses. The next stage moves to the vCache benchmarks, which pair real LLM prompts with real responses.
-- **GloVe embeddings are dated.** They were used because they are small and run anywhere. Modern sentence encoders will change absolute numbers; the comparison between policies is the point.
-- **The cache is filled in advance.** All 15,000 training queries are cached before testing. A real cache starts empty and learns online, which favours a different evaluation protocol.
-- **Single seed.** Numbers come from one initialisation. Results with 5 seeds and confidence intervals will replace them.
-- **No error-rate guarantee yet.** The current policy is tuned on a precision curve, not bounded by a user-chosen error rate.
+- **Pre-filled cache.** All current numbers fill the cache in advance; real caches start empty and learn online.
+- **PCA handicap.** The GMM sees 64 dimensions (47% of the variance) while the baselines see 1,024.
+- **Single seed.** Numbers come from one split and one initialisation; 5 seeds with confidence intervals will replace them.
+- **No error-rate guarantee yet.** Policies are tuned on a precision curve, not bounded by a user-chosen error rate.
 
 ---
 
 ## Roadmap
 
-1. **Real LLM data.** Evaluate on the vCache benchmarks (LM-Arena prompts and responses) with modern sentence embeddings.
-2. **Answer-aware EM.** Fit embeddings and answers jointly so clusters form around answer equivalence.
-3. **von Mises–Fisher mixture.** The natural likelihood for unit-length embeddings; the GMM becomes an ablation.
-4. **Choosing K.** Held-out likelihood and a Dirichlet-process mixture fit by variational inference.
-5. **Online EM and error guarantees.** Start from an empty cache, and serve only when a Bayesian lower bound on correctness clears a user-set target, compared head-to-head with vCache.
+1. **Online protocol.** Cache starts empty and inserts only on a miss (the vCache protocol); reproduce vCache's published numbers with its released code.
+2. **von Mises–Fisher mixture.** EM on the full 1,024-d unit sphere, removing the PCA handicap.
+3. **Bayesian error control.** A Beta–Bernoulli correctness model per cluster; serve only when the lower credible bound clears 1 − ε.
+4. **Online EM and choosing K.** Incremental updates, new components for novel prompts, and a Dirichlet-process mixture fit by variational inference.
+5. **Full evaluation.** Second benchmark (SearchQueries), two embedding models, 5 seeds, ablations, and a head-to-head with vCache.
 
 ---
 
@@ -219,18 +237,17 @@ gmm-semantic-cache/
 
 | Layer | Technology |
 |---|---|
-| Model | NumPy, SciPy (`logsumexp`): EM for a diagonal-covariance GMM, written from scratch |
-| Embeddings | GloVe 100-d with SIF weighting; scikit-learn PCA |
-| Evaluation | Hit-rate / precision sweeps, BIC, density-gate statistics |
-| Plots | Matplotlib |
-| Testing | pytest |
-| Data | CLINC150 (22,500 in-scope + 1,200 out-of-scope queries, 150 intents) |
+| Model | NumPy, SciPy: EM for mixture models, written from scratch |
+| Data | vCache benchmarks via `huggingface_hub` + `pyarrow` (column-only reads); CLINC150 |
+| Embeddings | Precomputed gte (1,024-d); GloVe + SIF for CLINC150; scikit-learn PCA |
+| Baselines | Cosine threshold (GPTCache-style), k-NN vote |
+| Plots and tests | Matplotlib, pytest |
 
 ---
 
 ## Team
 
-[Name 1] · [Name 2] · [Name 3]
+Mishika Ahuja · Praavin Kumar · Svetya Koppisetty · Ved Mistry
 
 *Course project for CS275P, Probabilistic Machine Learning.*
 
@@ -239,6 +256,7 @@ gmm-semantic-cache/
 - F. Bang. GPTCache: An open-source semantic cache for LLM applications. NLP-OSS Workshop, 2023.
 - L. G. Schroeder et al. vCache: Verified semantic prompt caching. ICLR, 2026. [arXiv:2502.03771](https://arxiv.org/abs/2502.03771)
 - W. Gill et al. MeanCache: User-centric semantic caching for LLM web services. IEEE IPDPS, 2025.
+- MVR-cache: Optimizing semantic caching via multi-vector retrieval and learned prompt segmentation. [arXiv:2605.24914](https://arxiv.org/abs/2605.24914), 2026.
+- A. Banerjee, I. S. Dhillon, J. Ghosh, S. Sra. Clustering on the unit hypersphere using von Mises–Fisher distributions. JMLR, 2005.
 - A. P. Dempster, N. M. Laird, D. B. Rubin. Maximum likelihood from incomplete data via the EM algorithm. JRSS-B, 1977.
 - S. Larson et al. An evaluation dataset for intent classification and out-of-scope prediction. EMNLP-IJCNLP, 2019.
-- S. Arora, Y. Liang, T. Ma. A simple but tough-to-beat baseline for sentence embeddings. ICLR, 2017.
